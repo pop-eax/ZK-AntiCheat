@@ -8,7 +8,7 @@ fn main(
     verification_key: [Field; HONK_VK_SIZE],
     proof: [Field; HONK_PROOF_SIZE],
     public_inputs: pub [Field; 2],
-    accumlator: pub Field,
+    accumulator: pub Field,
     new_root: pub Field
     // proof2: [Field; HONK_PROOF_SIZE],
     // public_inputs2: pub [Field; 2],
@@ -28,5 +28,5 @@ fn main(
     //     0x0,
     //     HONK_IDENTIFIER,
     // );
-    assert(hash([public_inputs[0], accumlator], 2) == new_root);
+    assert(hash([public_inputs[0], accumulator], 2) == new_root);
 }

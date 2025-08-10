@@ -2,12 +2,11 @@ import { Barretenberg, RawBuffer, UltraHonkBackend, Fr } from "@aztec/bb.js";
 import innerCircuit from "../circuits/merkleProof/target/merkleproof.json" assert { type: "json" };
 import recursiveCircuit from "../circuits/gamePlayProver/target/gamePlayProver.json" assert { type: "json" };
 import whitelistCircuit from "../circuits/whitelist/target/whitelist.json" assert { type: "json" };
-import recursvieWhitelistCircuit from "../circuits/recursiveWhitelist/target/recursiveWhitelist.json" assert { type: "json" };
+import recursiveWhitelistCircuit from "../circuits/recursiveWhitelist/target/recursiveWhitelist.json" assert { type: "json" };
 import { type CompiledCircuit, Noir } from "@noir-lang/noir_js";
 import { merkelize, whitelist_check, readWhiteList, blake3_to_poseidon, toToml } from "./utils";
 import express from "express";
 import fs from 'fs';
-
 
 const app = express();
 const port = 9000;
@@ -16,170 +15,231 @@ app.use(express.json({ limit: '20mb' }));
 const PATH_LENGTH = 4096;
 
 interface QueueObject {
-    root: string,
-    path: string[][]
+    root: string;
+    path: string[][];
 }
 
-let whitelistCheck = true;
-let accumlator = Fr.ZERO;
-let proved_roots: string[] = [];
+interface CircuitInstances {
+    main: Noir;
+    recursiveCircuit: Noir;
+    whitelistCircuit: Noir;
+    recursiveWhitelist: Noir;
+}
 
-/*
-* Check all elements and make sure the static/bounded parts are valid or wihtin reach
-* for the dynamic parts recursively go down the tree until we reach a whitelisted element
-* if no whitelisted elements we are left with 2 possiblties either the element is blacklisted or undefined in case of undefined behavior it depends on the element position in memory
-* critical parts have to be bounded by the whitelist so discrepancies aren't tolearted in more generic areas we can keep a note of it but it doesn't directly imply an invalid state
-* Afterwards we are left with a state machine model where we only check the dynamic changing parts of memory where we can keep checking the deltas of states
-* in some cases we might want to reveal the contents of the leaf to make sure it's within the bounds.
-* the given input has to be signed by the user in order to prevent against 
-* you can give me the proofs of inclusion outside of the circuit
-*/
-const proveit = async (hexRoot: string, p: string[]) => {
-    const whitelist = readWhiteList("./static_memory_nes.bin")
+interface BackendInstances {
+    main: UltraHonkBackend;
+    recursiveBackend: UltraHonkBackend;
+    whitelistBackend: UltraHonkBackend;
+    recursiveWhitelist: UltraHonkBackend;
+}
 
+// Configuration flags
+let whitelistCheck = false;
+let accumulator = Fr.ZERO;
+let provedRoots: string[] = [];
 
+/**
+ * Generate proof of game state validity
+ * 
+ * This function processes game state data and generates ZK proofs to verify:
+ * - Memory integrity against whitelist
+ * - State transitions
+ * - Recursive proof aggregation
+ * 
+ * @param hexRoot - Root hash of the game state
+ * @param path - Array of memory paths to validate
+ */
+const generateProof = async (hexRoot: string, path: string[]): Promise<void> => {
+    const whitelist = readWhiteList("./static_memory_nes.bin");
 
-
-
-    const circuits = {
+    // Initialize circuit instances
+    const circuits: CircuitInstances = {
         main: new Noir(innerCircuit as CompiledCircuit),
         recursiveCircuit: new Noir(recursiveCircuit as CompiledCircuit),
         whitelistCircuit: new Noir(whitelistCircuit as CompiledCircuit),
-        recursiveWhiteList: new Noir(recursvieWhitelistCircuit as CompiledCircuit)
+        recursiveWhitelist: new Noir(recursiveWhitelistCircuit as CompiledCircuit)
     };
 
-    const backends = {
+    // Initialize backend instances
+    const backends: BackendInstances = {
         main: new UltraHonkBackend(innerCircuit.bytecode, { threads: 0 }, { recursive: true }),
         recursiveBackend: new UltraHonkBackend(recursiveCircuit.bytecode, { threads: 0 }),
         whitelistBackend: new UltraHonkBackend(whitelistCircuit.bytecode, { threads: 0 }, { recursive: true }),
-        recursiveWhiteList: new UltraHonkBackend(recursvieWhitelistCircuit.bytecode, { threads: 0 })
+        recursiveWhitelist: new UltraHonkBackend(recursiveWhitelistCircuit.bytecode, { threads: 0 })
     };
 
     const api = await Barretenberg.new({ threads: 1 });
 
-    const current_slice: number[][] = p.map(x => Array.from(Buffer.from(x?.slice(2), "hex")));
-    let current_level = await Promise.all(current_slice.map(async (x: number[]) => {
-        return await api.poseidon2Hash(x.map(y => new Fr(BigInt(y))));
-    }));
-    let leaves = current_level.map(x => x.toString());
-    const rootFr: Fr = await merkelize(api, current_level) as Fr;
-    const root = rootFr?.toString() as string
-
     try {
+        // Convert hex strings to field elements
+        const currentSlice: number[][] = path.map(x => Array.from(Buffer.from(x?.slice(2), "hex")));
+        let currentLevel = await Promise.all(currentSlice.map(async (x: number[]) => {
+            return await api.poseidon2Hash(x.map(y => new Fr(BigInt(y))));
+        }));
+        
+        let leaves = currentLevel.map(x => x.toString());
+        const rootFr: Fr = await merkelize(api, currentLevel) as Fr;
+        const root = rootFr?.toString() as string;
 
         if (whitelistCheck) {
-            const inputs: any = {
-                whitelisted: (await blake3_to_poseidon(api, whitelist)).map(elem => elem == "0x2a5aabd2497e5a28f96c54488d4d81df11fabe139a01b4205f04ff3f61ffbfd2" ? "0x0000000000000000000000000000000000000000000000000000000000000000" : elem),
+            // Process whitelist validation
+            const inputs = {
+                whitelisted: (await blake3_to_poseidon(api, whitelist)).map(elem => 
+                    elem === "0x2a5aabd2497e5a28f96c54488d4d81df11fabe139a01b4205f04ff3f61ffbfd2" 
+                        ? "0x0000000000000000000000000000000000000000000000000000000000000000" 
+                        : elem
+                ),
                 currentState: leaves,
                 hash: root
             };
 
             const diffs = await whitelist_check(inputs.whitelisted, inputs.currentState);
-            if (diffs == 0) {
+            if (diffs === 0) {
                 const { witness } = await circuits.whitelistCircuit.execute(inputs);
-                const { proof: innerProofFields, publicInputs: innerPublicInputs } = await backends.whitelistBackend.generateProofForRecursiveAggregation(witness);
+                const { proof: innerProofFields, publicInputs: innerPublicInputs } = 
+                    await backends.whitelistBackend.generateProofForRecursiveAggregation(witness);
 
                 const innerCircuitVerificationKey = await backends.whitelistBackend.getVerificationKey();
-                const vkAsFields = (await api.acirVkAsFieldsUltraHonk(new RawBuffer(innerCircuitVerificationKey))).map(field => field.toString());
+                const vkAsFields = (await api.acirVkAsFieldsUltraHonk(new RawBuffer(innerCircuitVerificationKey)))
+                    .map(field => field.toString());
 
-                const recursiveInputs = { proof: innerProofFields, public_inputs: innerPublicInputs, verification_key: vkAsFields };
-                const { witness: recursiveWitness } = await circuits.recursiveWhiteList.execute(recursiveInputs);
-                const { proof: recursiveProof, publicInputs: recursivePublicInputs } = await backends.recursiveWhiteList.generateProof(recursiveWitness);
-                console.log("DONE");
+                const recursiveInputs = { 
+                    proof: innerProofFields, 
+                    public_inputs: innerPublicInputs, 
+                    verification_key: vkAsFields 
+                };
+                
+                const { witness: recursiveWitness } = await circuits.recursiveWhitelist.execute(recursiveInputs);
+                const { proof: recursiveProof, publicInputs: recursivePublicInputs } = 
+                    await backends.recursiveWhitelist.generateProof(recursiveWitness);
+                
+                console.log("Whitelist validation proof generated successfully");
             }
-        }
-        else if (proved_roots.includes(root)) {
-            console.log("Root is already proven");
-            accumlator = await api.poseidon2Hash([rootFr, accumlator]);
+        } else if (provedRoots.includes(root)) {
+            console.log("Root is already proven, updating accumulator");
+            accumulator = await api.poseidon2Hash([rootFr, accumulator]);
         } else {
-            const bad_hash = "0x1c26e8b6bd7085688b4a932fc0638fa2e8962d2177bf3d89bb45b1189a5dbc77"
-            const idx = p.findIndex((v) => v === bad_hash);
+            // Process new game state proof
+            const badHash = "0x1c26e8b6bd7085688b4a932fc0638fa2e8962d2177bf3d89bb45b1189a5dbc77";
+            const badHashIndex = path.findIndex((v) => v === badHash);
 
             let inputs: any;
-            if (idx == -1) {
-                inputs = { root: root, paths: leaves, bad_hashes: [bad_hash] };
-
+            if (badHashIndex === -1) {
+                inputs = { root: root, paths: leaves, bad_hashes: [badHash] };
             } else {
-                console.log("Evil hash detected at:", idx);
-                inputs = { root: hexRoot, paths: leaves, bad_hashes: [bad_hash] };
+                console.log("Evil hash detected at index:", badHashIndex);
+                inputs = { root: hexRoot, paths: leaves, bad_hashes: [badHash] };
             }
-            // fs.writeFileSync("input.toml", toToml(inputs));
 
             const { witness } = await circuits.main.execute(inputs);
-
-            const { proof: innerProofFields, publicInputs: innerPublicInputs } = await backends.main.generateProofForRecursiveAggregation(witness);
+            const { proof: innerProofFields, publicInputs: innerPublicInputs } = 
+                await backends.main.generateProofForRecursiveAggregation(witness);
 
             // Get verification key for inner circuit as fields
             const innerCircuitVerificationKey = await backends.main.getVerificationKey();
-            const vkAsFields = (await api.acirVkAsFieldsUltraHonk(new RawBuffer(innerCircuitVerificationKey))).map(field => field.toString());
+            const vkAsFields = (await api.acirVkAsFieldsUltraHonk(new RawBuffer(innerCircuitVerificationKey)))
+                .map(field => field.toString());
 
-            // Generate proof of the recursive circuit
-
-            let new_root = await api.poseidon2Hash([rootFr, accumlator]);
-            const recursiveInputs = { proof: innerProofFields, public_inputs: innerPublicInputs, verification_key: vkAsFields, accumlator: accumlator.toString(), new_root: new_root.toString() };
+            // Generate recursive proof
+            let newRoot = await api.poseidon2Hash([rootFr, accumulator]);
+            const recursiveInputs = { 
+                proof: innerProofFields, 
+                public_inputs: innerPublicInputs, 
+                verification_key: vkAsFields, 
+                accumulator: accumulator.toString(), 
+                new_root: newRoot.toString() 
+            };
+            
             const { witness: recursiveWitness } = await circuits.recursiveCircuit.execute(recursiveInputs);
-            const { proof: recursiveProof, publicInputs: recursivePublicInputs } = await backends.recursiveBackend.generateProof(recursiveWitness);
+            const { proof: recursiveProof, publicInputs: recursivePublicInputs } = 
+                await backends.recursiveBackend.generateProof(recursiveWitness);
 
             // Verify recursive proof
-            const verified = await backends.recursiveBackend.verifyProof({ proof: recursiveProof, publicInputs: recursivePublicInputs });
+            const verified = await backends.recursiveBackend.verifyProof({ 
+                proof: recursiveProof, 
+                publicInputs: recursivePublicInputs 
+            });
+            
             if (verified) {
-                proved_roots.push(root);
-                accumlator = new_root;
+                provedRoots.push(root);
+                accumulator = newRoot;
+                console.log("Recursive proof verified successfully");
+            } else {
+                console.log("Recursive proof verification failed");
             }
-            console.log("Recursive proof verified: ", verified);
         }
-
-        // let root = Array.from(Buffer.from(hexRoot, "hex"));
-        // const bad_hash = Array.from(Buffer.from("1c26e8babd7085688b4a932fc0638fa2e8962d2177bf3d89bb45b1189a5dbc77", "hex"));
-
-
     } catch (error) {
-        console.error(error);
+        console.error("Error during proof generation:", error);
+    } finally {
+        // Cleanup resources
+        await api.destroy();
+        await backends.main.destroy();
+        await backends.recursiveBackend.destroy();
+        await backends.whitelistBackend.destroy();
+        await backends.recursiveWhitelist.destroy();
     }
-    await api.destroy();
-    await backends.main.destroy();
-    await backends.recursiveBackend.destroy();
 };
 
-
 let queue: QueueObject[] = [];
-let proving = false;
-async function processQueue() {
-    console.log("Waiting...");
-    if (!proving && queue.length > 0) {
+let isProcessing = false;
 
-        proving = true;
+/**
+ * Process the proof generation queue
+ * 
+ * This function processes queued proof requests sequentially to avoid
+ * overwhelming the ZK proof generation system.
+ */
+async function processQueue(): Promise<void> {
+    console.log("Waiting for proof requests...");
+    
+    if (!isProcessing && queue.length > 0) {
+        isProcessing = true;
 
         try {
             console.log("Processing started at:", new Date().toLocaleTimeString());
             console.log(`Queued elements: ${queue.length}`);
+            
             let data: QueueObject = queue.pop() as QueueObject;
             for (let i = 0; i < data.path.length; i += 1) {
-                await proveit(data.root, data.path[i] as string[]);
+                await generateProof(data.root, data.path[i] as string[]);
             }
 
             console.log("Processing completed at:", new Date().toLocaleTimeString());
-            console.log("New state root: ", accumlator.toString());
+            console.log("New state root:", accumulator.toString());
         } catch (error) {
             console.error("Error during processing:", error);
         } finally {
-            proving = false;
+            isProcessing = false;
         }
     }
+    
+    // Schedule next queue check
     setTimeout(processQueue, 15000);
 }
 
-// Start the first execution
+// Start the queue processor
 processQueue();
 
+// API endpoint to receive game state data
 app.post("/", (req: any, res: any) => {
     console.log(`New game play received: ${req.body["root"]}`);
     queue.push({ root: req.body["root"], path: req.body["path"] });
     res.status(200).send('Data received successfully');
-
 });
 
+// Health check endpoint
+app.get("/health", (req: any, res: any) => {
+    res.status(200).json({
+        status: "healthy",
+        queueLength: queue.length,
+        isProcessing: isProcessing,
+        provedRootsCount: provedRoots.length,
+        accumulator: accumulator.toString()
+    });
+});
 
 app.listen(port, () => {
-    console.log(`Listening on port ${port}...`);
+    console.log(`🚀 Fairfy ZK Prover Server listening on port ${port}...`);
+    console.log(`📊 Health check: http://localhost:${port}/health`);
+    console.log(`🎮 Game state endpoint: POST http://localhost:${port}/`);
 });
