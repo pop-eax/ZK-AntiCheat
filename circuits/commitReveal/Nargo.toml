@@ -1,0 +1,6 @@
+[package]
+name = "commitReveal"
+type = "bin"
+authors = [""]
+
+[dependencies]

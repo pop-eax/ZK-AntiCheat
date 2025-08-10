@@ -1,0 +1,6 @@
+[package]
+name = "whitelist"
+type = "bin"
+authors = [""]
+
+[dependencies]

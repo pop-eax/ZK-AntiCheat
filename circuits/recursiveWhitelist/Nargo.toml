@@ -1,0 +1,6 @@
+[package]
+name = "recursiveWhitelist"
+type = "bin"
+authors = [""]
+
+[dependencies]

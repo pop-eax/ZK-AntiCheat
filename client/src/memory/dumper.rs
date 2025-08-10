@@ -35,9 +35,9 @@ impl MemoryDumper {
                     let is_not_library = !region.pathname.as_ref().map_or(false, |p| p.ends_with(".so") || p.contains(".so.") || p.contains(".gem"));
                     let is_reasonable_size = region.size < 50 * 1024 * 1024; // Less than 50MB
                     let is_not_huge_anonymous = !(region.pathname.is_none() && region.size > 10 * 1024 * 1024);
-                    let is_not_system_mem = region.pathname.as_ref().map_or(false, |p| p.contains("[vsyscall]") || p.contains("[vdso]") || p.contains("[vectors]") || p.ends_with(']') );
+                    let is_not_system_mem = region.pathname.as_ref().map_or(false, |p| p.contains("[vsyscall]") || p.contains("[vdso]") || p.contains("[vectors]") || p.ends_with(']'));
                     is_not_library && is_reasonable_size && is_not_huge_anonymous && is_not_system_mem
-                }, // all except libraries
+                }, 
                 RegionFilter::Readable => region.permissions.contains('r'),
                 RegionFilter::Writable => region.permissions.contains('w'),
                 RegionFilter::Executable => region.permissions.contains('x'),
@@ -125,7 +125,7 @@ impl MemoryDumper {
             }
         }
         
-        println!("Found {} memory regions", self.regions.len());
+        // println!("Found {} memory regions", self.regions.len());
         Ok(())
     }
     
