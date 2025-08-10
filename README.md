@@ -1,6 +1,6 @@
 # Zero-Knowledge Anti-Cheat Software
 
-A proof-of-concept system that uses cryptographic proofs to verify fair gameplay and detect cheating in video games.
+A proof-of-concept system that uses cryptographic proofs to verify fair gameplay and detect cheating in video game speedrunning.
 
 ## 🎯 Project Overview
 
@@ -141,3 +141,4 @@ cd serverProver && npx tsc --noEmit
 ## 🙏 Acknowledgments
 
 - [Noir](https://noir-lang.org/) - ZK programming language
+- [FCEUX](https://fceux.com/web/home.html) - FCEUX
