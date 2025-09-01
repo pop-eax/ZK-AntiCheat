@@ -5,28 +5,30 @@ global HONK_PROOF_SIZE: u32 = 456;
 global HONK_IDENTIFIER: u32 = 1;
 
 fn main(
-    verification_key: [Field; HONK_VK_SIZE],
-    proof: [Field; HONK_PROOF_SIZE],
-    public_inputs: pub [Field; 2],
+    verification_key: pub [Field; HONK_VK_SIZE],
+    proof1: pub [Field; HONK_PROOF_SIZE],
+    public_inputs1: pub [Field; 2],
+    proof2: pub [Field; HONK_PROOF_SIZE],
+    public_inputs2: pub [Field; 2],
     accumulator: pub Field,
-    new_root: pub Field
-    // proof2: [Field; HONK_PROOF_SIZE],
-    // public_inputs2: pub [Field; 2],
+    // new_root: pub Field,
 ) {
+    let mut r: Field = accumulator;
     std::verify_proof_with_type(
         verification_key,
-        proof,
-        public_inputs,
+        proof1,
+        public_inputs1,
         0x0,
         HONK_IDENTIFIER,
     );
+    std::verify_proof_with_type(
+        verification_key,
+        proof2,
+        public_inputs2,
+        0x0,
+        HONK_IDENTIFIER,
+    );
+    r = hash([r, public_inputs1[0]], 2);
 
-    // std::verify_proof_with_type(
-    //     verification_key,
-    //     proof2,
-    //     public_inputs2,
-    //     0x0,
-    //     HONK_IDENTIFIER,
-    // );
-    assert(hash([public_inputs[0], accumulator], 2) == new_root);
+    // assert(r == new_root);
 }
